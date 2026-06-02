@@ -3,6 +3,7 @@
 #include "../src/TransferService.h"
 #include "../src/ThreadPool.h"
 #include "../src/MetricsCollector.h"
+#include "../src/Dashboard.h"
 
 #include <atomic>
 #include <cassert>
@@ -12,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <thread>
 #include <vector>
 
 int main() {
@@ -42,63 +44,87 @@ int main() {
 
     std::atomic<int> successCount{0};
     std::atomic<int> failCount{0};
+    std::atomic<bool> consistencyReady{false};
+    std::atomic<bool> consistencyOk{false};
 
     const auto startTime = std::chrono::steady_clock::now();
-    {
-        ThreadPool pool(numThreads);
+    ThreadPool pool(numThreads);
+    Dashboard dashboard(
+        numAccounts,
+        [&metrics]() { return metrics.getReport(); },
+        [&pool]() { return pool.queueSize(); },
+        [&pool]() { return pool.activeWorkerCount(); },
+        [&]() {
+            if (!consistencyReady.load(std::memory_order_relaxed)) {
+                return std::string("Pending");
+            }
+            return consistencyOk.load(std::memory_order_relaxed) ? std::string("Passed") : std::string("Failed");
+        });
+    dashboard.start();
 
-        for (int threadIndex = 0; threadIndex < numThreads; ++threadIndex) {
-            pool.enqueue([&]() {
-                std::mt19937_64 rng(std::random_device{}());
-                std::uniform_int_distribution<int> accountDist(1, numAccounts);
-                std::uniform_real_distribution<double> amountDist(1.0, 500.0);
+    for (int threadIndex = 0; threadIndex < numThreads; ++threadIndex) {
+        pool.enqueue([&]() {
+            std::mt19937_64 rng(std::random_device{}());
+            std::uniform_int_distribution<int> accountDist(1, numAccounts);
+            std::uniform_real_distribution<double> amountDist(1.0, 500.0);
 
-                for (int transferIndex = 0; transferIndex < transfersPerThread; ++transferIndex) {
-                    int fromId = accountDist(rng);
-                    int toId = accountDist(rng);
-                    while (toId == fromId) {
-                        toId = accountDist(rng);
-                    }
-
-                    Account& fromAccount = *accounts[fromId - 1];
-                    Account& toAccount = *accounts[toId - 1];
-
-                    const auto transferStart = std::chrono::steady_clock::now();
-                    TransferService service(fromAccount, toAccount, log);
-                    bool result = service.transfer(fromId, toId, amountDist(rng));
-                    const auto transferEnd = std::chrono::steady_clock::now();
-
-                    const long long latencyMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(transferEnd - transferStart).count();
-                    if (result) {
-                        ++successCount;
-                        metrics.recordSuccess(latencyMicroseconds);
-                    } else {
-                        ++failCount;
-                        metrics.recordFailure(latencyMicroseconds);
-                    }
+            for (int transferIndex = 0; transferIndex < transfersPerThread; ++transferIndex) {
+                int fromId = accountDist(rng);
+                int toId = accountDist(rng);
+                while (toId == fromId) {
+                    toId = accountDist(rng);
                 }
-            });
+
+                Account& fromAccount = *accounts[fromId - 1];
+                Account& toAccount = *accounts[toId - 1];
+
+                const auto transferStart = std::chrono::steady_clock::now();
+                TransferService service(fromAccount, toAccount, log);
+                bool result = service.transfer(fromId, toId, amountDist(rng));
+                const auto transferEnd = std::chrono::steady_clock::now();
+
+                const long long latencyMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(transferEnd - transferStart).count();
+                if (result) {
+                    ++successCount;
+                    metrics.recordSuccess(latencyMicroseconds);
+                } else {
+                    ++failCount;
+                    metrics.recordFailure(latencyMicroseconds);
+                }
+            }
+        });
+    }
+
+    const int totalTransactions = numThreads * transfersPerThread;
+    while (true) {
+        const MetricsReport report = metrics.getReport();
+        if (report.totalTransactions == totalTransactions &&
+            pool.queueSize() == 0 &&
+            pool.activeWorkerCount() == 0) {
+            break;
         }
-    } // pool is destroyed here, ensuring all tasks complete before measurement
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
     const auto endTime = std::chrono::steady_clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(endTime - startTime).count();
-    const int totalTransactions = numThreads * transfersPerThread;
     const double throughput = totalTransactions / elapsed;
 
     const double totalAfter = totalFunds();
+    const double difference = std::abs(totalBefore - totalAfter);
+    const int totalCount = successCount.load() + failCount.load();
+    const bool countsMatch = (totalCount == totalTransactions);
+    bool passed = (difference < 1e-6) && countsMatch;
+    consistencyOk.store(passed, std::memory_order_relaxed);
+    consistencyReady.store(true, std::memory_order_relaxed);
+    dashboard.stop();
+
     std::cout << "Total funds after: " << totalAfter << '\n';
     std::cout << "Transactions: " << totalTransactions << " in " << elapsed << " seconds\n";
     std::cout << "Throughput: " << throughput << " tx/s\n";
     std::cout << "Success count: " << successCount.load() << '\n';
     std::cout << "Fail count: " << failCount.load() << '\n';
-
-    const double difference = std::abs(totalBefore - totalAfter);
     std::cout << "Total difference: " << difference << '\n';
-
-    const int totalCount = successCount.load() + failCount.load();
-    const bool countsMatch = (totalCount == totalTransactions);
-    bool passed = (difference < 1e-6) && countsMatch;
 
     if (passed) {
         std::cout << "PASSED" << '\n';

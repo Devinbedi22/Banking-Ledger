@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -21,15 +22,17 @@ public:
                     {
                         std::unique_lock<std::mutex> lock(queueMutex);
                         condition.wait(lock, [this] {
-                            return stop || !tasks.empty();
+                            return stop.load(std::memory_order_relaxed) || !tasks.empty();
                         });
-                        if (stop && tasks.empty()) {
+                        if (stop.load(std::memory_order_relaxed) && tasks.empty()) {
                             return;
                         }
                         task = std::move(tasks.front());
                         tasks.pop();
                     }
+                    activeWorkers.fetch_add(1, std::memory_order_relaxed);
                     task();
+                    activeWorkers.fetch_sub(1, std::memory_order_relaxed);
                 }
             });
         }
@@ -51,7 +54,7 @@ public:
     void enqueue(std::function<void()> task) {
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            if (stop) {
+            if (stop.load(std::memory_order_relaxed)) {
                 return;
             }
             tasks.push(std::move(task));
@@ -59,10 +62,20 @@ public:
         condition.notify_one();
     }
 
+    size_t queueSize() const {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        return tasks.size();
+    }
+
+    size_t activeWorkerCount() const noexcept {
+        return activeWorkers.load(std::memory_order_relaxed);
+    }
+
 private:
     std::vector<std::thread> workers;
-    std::queue<std::function<void()>> tasks;
-    std::mutex queueMutex;
+    mutable std::queue<std::function<void()>> tasks;
+    mutable std::mutex queueMutex;
     std::condition_variable condition;
-    bool stop;
+    std::atomic<bool> stop;
+    std::atomic<size_t> activeWorkers{0};
 };
