@@ -1,0 +1,4 @@
+C:/Users/Devin Bedi/.vscode/banking-ledger/build/CMakeFiles/banking-ledger.dir
+C:/Users/Devin Bedi/.vscode/banking-ledger/build/CMakeFiles/stress_test.dir
+C:/Users/Devin Bedi/.vscode/banking-ledger/build/CMakeFiles/edit_cache.dir
+C:/Users/Devin Bedi/.vscode/banking-ledger/build/CMakeFiles/rebuild_cache.dir

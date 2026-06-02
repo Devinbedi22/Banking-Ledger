@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.10)
+project(banking-ledger LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Threads REQUIRED)
+
+file(GLOB_RECURSE SRC_SOURCES "src/*.cpp")
+
+add_executable(banking-ledger main.cpp ${SRC_SOURCES})
+set_target_properties(banking-ledger PROPERTIES WIN32_EXECUTABLE FALSE)
+target_link_libraries(banking-ledger PRIVATE Threads::Threads)
+
+add_executable(stress_test tests/stress_tests.cpp ${SRC_SOURCES})
+set_target_properties(stress_test PROPERTIES WIN32_EXECUTABLE FALSE)
+target_link_libraries(stress_test PRIVATE Threads::Threads)
