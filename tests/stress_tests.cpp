@@ -2,11 +2,13 @@
 #include "../src/TransactionLog.h"
 #include "../src/TransferService.h"
 #include "../src/ThreadPool.h"
+#include "../src/MetricsCollector.h"
 
 #include <atomic>
 #include <cassert>
 #include <cmath>
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -36,6 +38,7 @@ int main() {
     std::cout << "Total funds before: " << totalBefore << '\n';
 
     TransactionLog log;
+    MetricsCollector metrics;
 
     std::atomic<int> successCount{0};
     std::atomic<int> failCount{0};
@@ -59,12 +62,19 @@ int main() {
 
                     Account& fromAccount = *accounts[fromId - 1];
                     Account& toAccount = *accounts[toId - 1];
+
+                    const auto transferStart = std::chrono::steady_clock::now();
                     TransferService service(fromAccount, toAccount, log);
                     bool result = service.transfer(fromId, toId, amountDist(rng));
+                    const auto transferEnd = std::chrono::steady_clock::now();
+
+                    const long long latencyMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(transferEnd - transferStart).count();
                     if (result) {
                         ++successCount;
+                        metrics.recordSuccess(latencyMicroseconds);
                     } else {
                         ++failCount;
+                        metrics.recordFailure(latencyMicroseconds);
                     }
                 }
             });
@@ -95,6 +105,18 @@ int main() {
     } else {
         std::cout << "FAILED" << '\n';
     }
+
+    const MetricsReport report = metrics.getReport();
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "Metrics Report:\n";
+    std::cout << "  Total transactions: " << report.totalTransactions << '\n';
+    std::cout << "  Successful transactions: " << report.successfulTransactions << '\n';
+    std::cout << "  Failed transactions: " << report.failedTransactions << '\n';
+    std::cout << "  Average latency (us): " << report.averageLatencyMicroseconds << '\n';
+    std::cout << "  Min latency (us): " << report.minLatencyMicroseconds << '\n';
+    std::cout << "  Max latency (us): " << report.maxLatencyMicroseconds << '\n';
+    std::cout << "  Current TPS: " << report.currentTps << '\n';
+    std::cout << "  Peak TPS: " << report.peakTps << '\n';
 
     assert(passed);
     return passed ? 0 : 1;
